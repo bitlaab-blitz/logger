@@ -35,7 +35,7 @@ const SingletonObject = struct {
     output: OutputType,
     level: u8,
     fd: ?i32,
-    aio: type,
+    aio: ?type,
     on_test: bool
 };
 
