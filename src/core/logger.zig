@@ -46,7 +46,7 @@ pub fn Logger(comptime T: type) type {
             .output = OutputType.Console,
             .level = DEBUG | INFO | WARN | ERROR | FATAL,
             .fd = null,
-            .aio = null,
+            .aio = T,
             .on_test = false
         };
 
