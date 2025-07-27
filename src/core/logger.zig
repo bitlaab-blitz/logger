@@ -64,7 +64,6 @@ pub fn Logger(comptime Aio: type) type {
 
             sop.heap = heap;
             sop.on_test = on_test;
-            sop.handle = .{.file = std.io.getStdOut() };
 
             if (file) |path| {
                 sop.output = OutputType.File;
@@ -94,6 +93,8 @@ pub fn Logger(comptime Aio: type) type {
 
                     sop.handle = .{.file = rv};
                 }
+            } else {
+                sop.handle = .{.file = std.io.getStdOut() };
             }
 
             for (levels) |level| {
@@ -104,8 +105,6 @@ pub fn Logger(comptime Aio: type) type {
                 else if (mem.eql(u8, level, "FATAL")) sop.level |= FATAL
                 else return Error.InvalidLogLevel;
             }
-
-            std.debug.print("{any}\n", .{sop.*});
         }
 
         /// # Destroys the Global Logger
@@ -258,8 +257,6 @@ pub fn Logger(comptime Aio: type) type {
             const heap = sop.heap.?;
 
             if (blocking or Aio != void and Aio.evlStatus() == .closed) {
-                 std.debug.print("truely blocking\n", .{});
-                // std.debug.print("truely blocking {any}\n", .{Aio.evlStatus()});
                 defer heap.free(data);
 
                 if (sop.on_test) return;
@@ -279,14 +276,12 @@ pub fn Logger(comptime Aio: type) type {
                 try Aio.write(free, @as(?*anyopaque, log_data), .{
                     .fd = fd, .buff = data, .count = data.len, .offset = 0
                 });
-
-                std.debug.print("logging with Aio\n", .{});
             } else {
-                try sop.handle.?.file.seekFromEnd(0);
+                if (sop.output == .File) try sop.handle.?.file.seekFromEnd(0);
                 const file = sop.handle.?.file.writer();
                 std.debug.assert(try file.write(data) == data.len);
+
                 heap.free(data);
-                std.debug.print("logging with Blocking\n", .{});
             }
         }
 
