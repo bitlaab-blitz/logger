@@ -1,0 +1,16 @@
+.{
+    .name = .logger,
+    .version = "1.0.0",
+    .fingerprint = 0x987e13f35e0839cc,
+    .minimum_zig_version = "0.15.0-dev.832+1ca213dab",
+    .dependencies = .{},
+    .paths = .{
+        "docs",
+        "src",
+        "build.zig",
+        "build.zig.zon",
+        "CHANGELOG.md",
+        "LICENSE",
+        "README.md",
+    },
+}
