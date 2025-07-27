@@ -92,11 +92,11 @@ pub fn init(
     }
 
     for (levels) |level| {
-        if (mem.eql(u8, level.string, "DEBUG")) sop.level |= DEBUG
-        else if (mem.eql(u8, level.string, "INFO")) sop.level |= INFO
-        else if (mem.eql(u8, level.string, "WARN")) sop.level |= WARN
-        else if (mem.eql(u8, level.string, "ERROR")) sop.level |= ERROR
-        else if (mem.eql(u8, level.string, "FATAL")) sop.level |= FATAL
+        if (mem.eql(u8, level, "DEBUG")) sop.level |= DEBUG
+        else if (mem.eql(u8, level, "INFO")) sop.level |= INFO
+        else if (mem.eql(u8, level, "WARN")) sop.level |= WARN
+        else if (mem.eql(u8, level, "ERROR")) sop.level |= ERROR
+        else if (mem.eql(u8, level, "FATAL")) sop.level |= FATAL
         else return Error.InvalidLogLevel;
     }
 }
