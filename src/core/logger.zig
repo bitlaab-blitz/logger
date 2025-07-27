@@ -44,7 +44,7 @@ var so = SingletonObject {
     .output = OutputType.Console,
     .level = DEBUG | INFO | WARN | ERROR | FATAL,
     .fd = null,
-    .aio = type,
+    .aio = null,
     .on_test = false
 };
 
