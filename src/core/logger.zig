@@ -37,7 +37,6 @@ pub fn Logger(comptime Aio: type) type {
             output: OutputType,
             level: u8,
             fd: ?i32,
-            aio: type,
             on_test: bool
         };
 
@@ -46,7 +45,6 @@ pub fn Logger(comptime Aio: type) type {
             .output = OutputType.Console,
             .level = DEBUG | INFO | WARN | ERROR | FATAL,
             .fd = null,
-            .aio = Aio,
             .on_test = false
         };
 
@@ -68,7 +66,6 @@ pub fn Logger(comptime Aio: type) type {
             const sop = Self.iso();
 
             sop.fd = 2;
-            sop.aio = Aio;
             sop.level = 0;
             sop.heap = heap;
             sop.on_test = on_test;
@@ -198,7 +195,7 @@ pub fn Logger(comptime Aio: type) type {
             const sop = Self.iso();
             const heap = sop.heap.?;
 
-            if (blocking or sop.aio.evlStatus() == .closed) {
+            if (blocking or Aio.evlStatus() == .closed) {
                 defer heap.free(data);
 
                 if (sop.on_test) return;
@@ -210,7 +207,7 @@ pub fn Logger(comptime Aio: type) type {
                 return;
             }
 
-            if (!sop.aio) {
+            if (Aio == @TypeOf(null)) {
                 _ = try std.posix.write(sop.fd.?, data);
                 // std.os.windows.WriteFile
                 std.debug.print("logging with blocking mode\n", .{});
@@ -219,7 +216,7 @@ pub fn Logger(comptime Aio: type) type {
                 const log_data = try heap.create(Log);
                 log_data.* = Log {.data = data};
 
-                try sop.aio.write(free, @as(*anyopaque, log_data), .{
+                try Aio.write(free, @as(*anyopaque, log_data), .{
                     .fd = sop.fd.?, .buff = data, .count = data.len, .offset = 0
                 });
             }
