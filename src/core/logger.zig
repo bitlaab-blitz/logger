@@ -6,10 +6,11 @@ const fs = std.fs;
 const fmt = std.fmt;
 const mem = std.mem;
 const File = fs.File;
-const linux = std.os.linux;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
 const SrcLoc = std.builtin.SourceLocation;
+
+const builtin = @import("builtin");
 
 const utils = @import("./utils.zig");
 const DateTime = @import("./datetime.zig");
@@ -18,8 +19,8 @@ const DateTime = @import("./datetime.zig");
 const Error = error { InvalidLogLevel, FailedToOpenLogFile };
 
 const DEBUG = 1 << 0;
-const INFO = 1 << 1;
-const WARN = 1 << 2;
+const INFO  = 1 << 1;
+const WARN  = 1 << 2;
 const ERROR = 1 << 3;
 const FATAL = 1 << 4;
 
@@ -29,64 +30,70 @@ const Log = struct { data: Str };
 const Ctx = struct { name: Str, value: Str };
 
 const OutputType = enum { Console, File };
+const Handle = union(enum) { fd: i32, file: File };
 
+/// # Singleton Logging Manager
+/// - `Aio` - An optional I/O executor, use **void** for blocking I/O
 pub fn Logger(comptime Aio: type) type {
     return struct {
         const SingletonObject = struct {
-            heap: ?Allocator,
-            output: OutputType,
-            level: u8,
-            fd: ?i32,
-            on_test: bool
+            heap: ?Allocator = null,
+            output: OutputType = OutputType.Console,
+            handle: ?Handle = null,
+            on_test: bool = false,
+            level: u8 = 0
         };
 
-        var so = SingletonObject {
-            .heap = null,
-            .output = OutputType.Console,
-            .level = DEBUG | INFO | WARN | ERROR | FATAL,
-            .fd = null,
-            .on_test = false
-        };
+        var so = SingletonObject {};
 
         const Self = @This();
 
         /// # Initializes the Global Logger
-        /// - `aio` - AsyncIo singleton from Saturn, use **null** for blocking I/O
-        /// - `file` - Absolute path of the log file (e.g., `/home/joe/app/hydra.log`)
-        /// - `levels` - Any combination of - `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`
-        /// - `on_test` - Determines if the logger is currently used in a unit test
+        /// - `file` - Absolute path of the given log file
+        /// - `levels` - One or more log level text (e.g., `DEBUG`)
+        /// - `on_test` - Determines if currently used in a unit test
         pub fn init(
             heap: Allocator,
             file: ?Str,
             levels: []const Str,
             on_test: bool
         ) !void {
-            if (Self.so.fd != null) @panic("Initialize Only Once Per Process!");
-
             const sop = Self.iso();
 
-            sop.fd = 2;
-            sop.level = 0;
+            if (sop.handle != null) @panic("Initialize Only Once Per Process!");
+
             sop.heap = heap;
             sop.on_test = on_test;
+            sop.handle = .{.file = std.io.getStdOut() };
 
             if (file) |path| {
+                sop.output = OutputType.File;
                 const pathZ = try heap.dupeZ(u8, path);
                 defer heap.free(pathZ);
 
-                // the fd needs to be cross platform
-                const res: isize = @bitCast(linux.openat(fs.cwd().fd, pathZ,
-                    linux.O {.ACCMODE = .WRONLY, .CREAT = true, .APPEND = true},
-                    0o644 // Octal literal for setting file permission
-                ));
+                const mode = 0o644; // For setting file permission (octal)
 
-                if (res <= 0) {
-                    utils.syscallError(@truncate(res), @src());
-                    return Error.FailedToOpenLogFile;
+                if (builtin.os.tag == .linux and Aio != void) {
+                    const linux = std.os.linux;
+                    const flags = std.os.linux.O {
+                        .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true
+                    };
+                    const rv = linux.openat(fs.cwd().fd, pathZ, flags, mode);
+                    const res: isize = @bitCast(rv);
+
+                    if (res <= 0) {
+                        utils.syscallError(@truncate(res), @src());
+                        return Error.FailedToOpenLogFile;
+                    }
+
+                    sop.handle = .{.fd = @truncate(res)};
+                } else {
+                    const rv = try std.fs.cwd().createFileZ(pathZ, .{
+                        .truncate = false, .read = false, .mode = mode
+                    });
+
+                    sop.handle = .{.file = rv};
                 }
-
-                sop.fd = @truncate(res);
-                sop.output = OutputType.File;
             }
 
             for (levels) |level| {
@@ -97,18 +104,36 @@ pub fn Logger(comptime Aio: type) type {
                 else if (mem.eql(u8, level, "FATAL")) sop.level |= FATAL
                 else return Error.InvalidLogLevel;
             }
+
+            std.debug.print("{any}\n", .{sop.*});
         }
 
         /// # Destroys the Global Logger
         pub fn deinit() void {
             const sop = Self.iso();
-            if (sop.fd.? != 2) std.debug.assert(linux.close(sop.fd.?) == 0);
+            if (sop.output == .Console) return;
+
+            switch (sop.handle.?) {
+                .file => |file| file.close(),
+                .fd => |fd| {
+                    if (builtin.os.tag == .linux and Aio != void) {
+                        std.debug.assert(std.os.linux.close(fd) == 0);
+                    } else unreachable;
+                }
+            }
         }
 
         /// # Returns Internal Static Object
         pub fn iso() *SingletonObject { return &Self.so; }
 
-        pub fn debug(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+        /// # Writes Debug Log
+        /// **Remarks:** Skips logging when `DEBUG` level is inactive.
+        pub fn debug(
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) void {
             const sop = Self.iso();
 
             if (sop.level & DEBUG == DEBUG) {
@@ -126,12 +151,21 @@ pub fn Logger(comptime Aio: type) type {
             }
         }
 
-        pub fn info(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+        /// # Writes Information Log
+        /// **Remarks:** Skips logging when `INFO` level is inactive.
+        pub fn info(
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) void {
             const sop = Self.iso();
 
             if (sop.level & INFO == INFO) {
                 const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                const data = fmt.allocPrint(heap, msg, args) catch {
+                    utils.oom(@src());
+                };
                 defer heap.free(data);
 
                 const out = format("INFO", data, ctx, src) catch |e| {
@@ -143,12 +177,21 @@ pub fn Logger(comptime Aio: type) type {
             }
         }
 
-        pub fn warn(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+        /// # Writes Warning Log
+        /// **Remarks:** Skips logging when `WARN` level is inactive.
+        pub fn warn(
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) void {
             const sop = Self.iso();
 
             if (sop.level & WARN == WARN) {
-                const heap = sop.heap;
-                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                const heap = sop.heap.?;
+                const data = fmt.allocPrint(heap, msg, args) catch {
+                    utils.oom(@src());
+                };
                 defer heap.free(data);
 
                 const out = format("WARN", data, ctx, src) catch |e| {
@@ -159,12 +202,21 @@ pub fn Logger(comptime Aio: type) type {
             }
         }
 
-        pub fn err(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+        /// # Writes Error Log
+        /// **Remarks:** Skips logging when `ERROR` level is inactive.
+        pub fn err(
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) void {
             const sop = Self.iso();
 
             if (sop.level & ERROR == ERROR) {
                 const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                const data = fmt.allocPrint(heap, msg, args) catch {
+                    utils.oom(@src());
+                };
                 defer heap.free(data);
 
                 const out = format("ERROR", data, ctx, src) catch |e| {
@@ -175,12 +227,22 @@ pub fn Logger(comptime Aio: type) type {
             }
         }
 
-        pub fn fatal(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+        /// # Writes Fatal Log
+        /// **Remarks:** Skips logging when `FATAL` level is inactive.
+        /// Fatal logs are always blocking and only written to the `stdOut`.
+        pub fn fatal(
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) void {
             const sop = Self.iso();
 
             if (sop.level & FATAL == FATAL) {
                 const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                const data = fmt.allocPrint(heap, msg, args) catch {
+                    utils.oom(@src());
+                };
                 defer heap.free(data);
 
                 const out = format("FATAL", data, ctx, src) catch |e| {
@@ -195,30 +257,36 @@ pub fn Logger(comptime Aio: type) type {
             const sop = Self.iso();
             const heap = sop.heap.?;
 
-            if (blocking or Aio.evlStatus() == .closed) {
+            if (blocking or Aio != void and Aio.evlStatus() == .closed) {
+                 std.debug.print("truely blocking\n", .{});
+                // std.debug.print("truely blocking {any}\n", .{Aio.evlStatus()});
                 defer heap.free(data);
 
                 if (sop.on_test) return;
-                // Raw printing e.g., `StdOut` in unit tests is currently illegal
-                // ↓ skips the following code when running on unit testing
+                // Writing to `StdOut` in unit tests is currently illegal
+                // ↓ skips the following code when called on unit testing
 
                 var std_out = std.io.getStdOut().writer();
                 try std_out.print("{s}", .{data});
                 return;
             }
 
-            if (Aio == @TypeOf(null)) {
-                _ = try std.posix.write(sop.fd.?, data);
-                // std.os.windows.WriteFile
-                std.debug.print("logging with blocking mode\n", .{});
-            }
-            else {
+            if (builtin.os.tag == .linux and Aio != void) {
                 const log_data = try heap.create(Log);
-                log_data.* = Log {.data = data};
+                log_data.* = .{.data = data};
 
-                try Aio.write(free, @as(*anyopaque, log_data), .{
-                    .fd = sop.fd.?, .buff = data, .count = data.len, .offset = 0
+                const fd = sop.handle.?.fd;
+                try Aio.write(free, @as(?*anyopaque, log_data), .{
+                    .fd = fd, .buff = data, .count = data.len, .offset = 0
                 });
+
+                std.debug.print("logging with Aio\n", .{});
+            } else {
+                try sop.handle.?.file.seekFromEnd(0);
+                const file = sop.handle.?.file.writer();
+                std.debug.assert(try file.write(data) == data.len);
+                heap.free(data);
+                std.debug.print("logging with Blocking\n", .{});
             }
         }
 
@@ -231,7 +299,7 @@ pub fn Logger(comptime Aio: type) type {
             heap.destroy(log_data);
         }
 
-        fn format(level: Str, msg: Str, data: ?[]Ctx, src: SrcLoc) !Str {
+        fn format(level: Str, msg: Str, data: ?[]const Ctx, src: SrcLoc) !Str {
             const heap = Self.iso().heap.?;
             const datetime = DateTime.now().toLocal(.BST);
 
@@ -255,20 +323,22 @@ pub fn Logger(comptime Aio: type) type {
 
         /// # Formats the Additional User Defined Data
         /// **Remarks:** Return value must be freed by the caller.
-        fn ctxFormat(data: []Ctx) !Str {
+        fn ctxFormat(data: []const Ctx) !Str {
             const heap = Self.iso().heap.?;
             var list = std.ArrayList(u8).init(heap);
 
             try list.append('{');
 
             for (data) |ctx| {
-                const fmt_str = "{s}: {s},";
-                const out = try fmt.allocPrint(heap, fmt_str, .{ctx.name, ctx.value});
+                const fmt_str = "{s}: {s}, ";
+                const out = try fmt.allocPrint(
+                    heap, fmt_str, .{ctx.name, ctx.value}
+                );
                 defer heap.free(out);
-
                 try list.appendSlice(out);
             }
 
+            _ = list.pop();
             _ = list.pop();
             try list.append('}');
 
