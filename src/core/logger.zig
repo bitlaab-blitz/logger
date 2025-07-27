@@ -30,249 +30,253 @@ const Ctx = struct { name: Str, value: Str };
 
 const OutputType = enum { Console, File };
 
-const SingletonObject = struct {
-    heap: ?Allocator,
-    output: OutputType,
-    level: u8,
-    fd: ?i32,
-    aio: ?type,
-    on_test: bool
-};
+pub fn Logger(comptime T: type) type {
+    return struct {
+        const SingletonObject = struct {
+            heap: ?Allocator,
+            output: OutputType,
+            level: u8,
+            fd: ?i32,
+            aio: T,
+            on_test: bool
+        };
 
-var so = SingletonObject {
-    .heap = null,
-    .output = OutputType.Console,
-    .level = DEBUG | INFO | WARN | ERROR | FATAL,
-    .fd = null,
-    .aio = null,
-    .on_test = false
-};
+        var so = SingletonObject {
+            .heap = null,
+            .output = OutputType.Console,
+            .level = DEBUG | INFO | WARN | ERROR | FATAL,
+            .fd = null,
+            .aio = null,
+            .on_test = false
+        };
 
-const Self = @This();
+        const Self = @This();
 
-/// # Initializes the Global Logger
-/// - `aio` - AsyncIo singleton from Saturn, use **null** for blocking I/O
-/// - `file` - Absolute path of the log file (e.g., `/home/joe/app/hydra.log`)
-/// - `levels` - Any combination of - `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`
-/// - `on_test` - Determines if the logger is currently used in a unit test
-pub fn init(
-    heap: Allocator,
-    comptime aio: type,
-    file: ?Str,
-    levels: []const Str,
-    on_test: bool
-) !void {
-    if (Self.so.fd != null) @panic("Initialize Only Once Per Process!");
+        /// # Initializes the Global Logger
+        /// - `aio` - AsyncIo singleton from Saturn, use **null** for blocking I/O
+        /// - `file` - Absolute path of the log file (e.g., `/home/joe/app/hydra.log`)
+        /// - `levels` - Any combination of - `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`
+        /// - `on_test` - Determines if the logger is currently used in a unit test
+        pub fn init(
+            heap: Allocator,
+            comptime aio: type,
+            file: ?Str,
+            levels: []const Str,
+            on_test: bool
+        ) !void {
+            if (Self.so.fd != null) @panic("Initialize Only Once Per Process!");
 
-    const sop = Self.iso();
+            const sop = Self.iso();
 
-    sop.fd = 2;
-    sop.aio = aio;
-    sop.level = 0;
-    sop.heap = heap;
-    sop.on_test = on_test;
+            sop.fd = 2;
+            sop.aio = aio;
+            sop.level = 0;
+            sop.heap = heap;
+            sop.on_test = on_test;
 
-    if (file) |path| {
-        const pathZ = try heap.dupeZ(u8, path);
-        defer heap.free(pathZ);
+            if (file) |path| {
+                const pathZ = try heap.dupeZ(u8, path);
+                defer heap.free(pathZ);
 
-        // the fd needs to be cross platform
-        const res: isize = @bitCast(linux.openat(fs.cwd().fd, pathZ,
-            linux.O {.ACCMODE = .WRONLY, .CREAT = true, .APPEND = true},
-            0o644 // Octal literal for setting file permission
-        ));
+                // the fd needs to be cross platform
+                const res: isize = @bitCast(linux.openat(fs.cwd().fd, pathZ,
+                    linux.O {.ACCMODE = .WRONLY, .CREAT = true, .APPEND = true},
+                    0o644 // Octal literal for setting file permission
+                ));
 
-        if (res <= 0) {
-            utils.syscallError(@truncate(res), @src());
-            return Error.FailedToOpenLogFile;
+                if (res <= 0) {
+                    utils.syscallError(@truncate(res), @src());
+                    return Error.FailedToOpenLogFile;
+                }
+
+                sop.fd = @truncate(res);
+                sop.output = OutputType.File;
+            }
+
+            for (levels) |level| {
+                if (mem.eql(u8, level, "DEBUG")) sop.level |= DEBUG
+                else if (mem.eql(u8, level, "INFO")) sop.level |= INFO
+                else if (mem.eql(u8, level, "WARN")) sop.level |= WARN
+                else if (mem.eql(u8, level, "ERROR")) sop.level |= ERROR
+                else if (mem.eql(u8, level, "FATAL")) sop.level |= FATAL
+                else return Error.InvalidLogLevel;
+            }
         }
 
-        sop.fd = @truncate(res);
-        sop.output = OutputType.File;
-    }
+        /// # Destroys the Global Logger
+        pub fn deinit() void {
+            const sop = Self.iso();
+            if (sop.fd.? != 2) std.debug.assert(linux.close(sop.fd.?) == 0);
+        }
 
-    for (levels) |level| {
-        if (mem.eql(u8, level, "DEBUG")) sop.level |= DEBUG
-        else if (mem.eql(u8, level, "INFO")) sop.level |= INFO
-        else if (mem.eql(u8, level, "WARN")) sop.level |= WARN
-        else if (mem.eql(u8, level, "ERROR")) sop.level |= ERROR
-        else if (mem.eql(u8, level, "FATAL")) sop.level |= FATAL
-        else return Error.InvalidLogLevel;
-    }
-}
+        /// # Returns Internal Static Object
+        pub fn iso() *SingletonObject { return &Self.so; }
 
-/// # Destroys the Global Logger
-pub fn deinit() void {
-    const sop = Self.iso();
-    if (sop.fd.? != 2) std.debug.assert(linux.close(sop.fd.?) == 0);
-}
+        pub fn debug(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+            const sop = Self.iso();
 
-/// # Returns Internal Static Object
-pub fn iso() *SingletonObject { return &Self.so; }
+            if (sop.level & DEBUG == DEBUG) {
+                const heap = sop.heap.?;
+                const data = fmt.allocPrint(heap, msg, args) catch {
+                    utils.oom(@src());
+                };
+                defer heap.free(data);
 
-pub fn debug(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
-    const sop = Self.iso();
+                const out = format("DEBUG", data, ctx, src) catch |e| {
+                    utils.unrecoverable(e, @src());
+                };
 
-    if (sop.level & DEBUG == DEBUG) {
-        const heap = sop.heap.?;
-        const data = fmt.allocPrint(heap, msg, args) catch {
-            utils.oom(@src());
-        };
-        defer heap.free(data);
+                log(out, false) catch |e| utils.unrecoverable(e, @src());
+            }
+        }
 
-        const out = format("DEBUG", data, ctx, src) catch |e| {
-            utils.unrecoverable(e, @src());
-        };
+        pub fn info(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+            const sop = Self.iso();
 
-        log(out, false) catch |e| utils.unrecoverable(e, @src());
-    }
-}
+            if (sop.level & INFO == INFO) {
+                const heap = sop.heap.?;
+                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                defer heap.free(data);
 
-pub fn info(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
-    const sop = Self.iso();
+                const out = format("INFO", data, ctx, src) catch |e| {
+                    utils.unrecoverable(e, @src());
+                    return;
+                };
 
-    if (sop.level & INFO == INFO) {
-        const heap = sop.heap.?;
-        const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
-        defer heap.free(data);
+                log(out, false) catch |e| utils.unrecoverable(e, @src());
+            }
+        }
 
-        const out = format("INFO", data, ctx, src) catch |e| {
-            utils.unrecoverable(e, @src());
-            return;
-        };
+        pub fn warn(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+            const sop = Self.iso();
 
-        log(out, false) catch |e| utils.unrecoverable(e, @src());
-    }
-}
+            if (sop.level & WARN == WARN) {
+                const heap = sop.heap;
+                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                defer heap.free(data);
 
-pub fn warn(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
-    const sop = Self.iso();
+                const out = format("WARN", data, ctx, src) catch |e| {
+                    utils.unrecoverable(e, @src());
+                };
 
-    if (sop.level & WARN == WARN) {
-        const heap = sop.heap;
-        const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
-        defer heap.free(data);
+                log(out, false)  catch |e| utils.unrecoverable(e, @src());
+            }
+        }
 
-        const out = format("WARN", data, ctx, src) catch |e| {
-            utils.unrecoverable(e, @src());
-        };
+        pub fn err(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+            const sop = Self.iso();
 
-        log(out, false)  catch |e| utils.unrecoverable(e, @src());
-    }
-}
+            if (sop.level & ERROR == ERROR) {
+                const heap = sop.heap.?;
+                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                defer heap.free(data);
 
-pub fn err(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
-    const sop = Self.iso();
+                const out = format("ERROR", data, ctx, src) catch |e| {
+                    utils.unrecoverable(e, @src());
+                };
 
-    if (sop.level & ERROR == ERROR) {
-        const heap = sop.heap.?;
-        const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
-        defer heap.free(data);
+                log(out, false)  catch |e| utils.unrecoverable(e, @src());
+            }
+        }
 
-        const out = format("ERROR", data, ctx, src) catch |e| {
-            utils.unrecoverable(e, @src());
-        };
+        pub fn fatal(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
+            const sop = Self.iso();
 
-        log(out, false)  catch |e| utils.unrecoverable(e, @src());
-    }
-}
+            if (sop.level & FATAL == FATAL) {
+                const heap = sop.heap.?;
+                const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
+                defer heap.free(data);
 
-pub fn fatal(comptime msg: Str, args: anytype, ctx: ?[]Ctx, src: SrcLoc) void {
-    const sop = Self.iso();
+                const out = format("FATAL", data, ctx, src) catch |e| {
+                    utils.unrecoverable(e, @src());
+                };
 
-    if (sop.level & FATAL == FATAL) {
-        const heap = sop.heap.?;
-        const data = fmt.allocPrint(heap, msg, args) catch utils.oom(@src());
-        defer heap.free(data);
+                log(out, true) catch |e| utils.unrecoverable(e, @src());
+            }
+        }
 
-        const out = format("FATAL", data, ctx, src) catch |e| {
-            utils.unrecoverable(e, @src());
-        };
+        fn log(data: Str, blocking: bool) !void {
+            const sop = Self.iso();
+            const heap = sop.heap.?;
 
-        log(out, true) catch |e| utils.unrecoverable(e, @src());
-    }
-}
+            if (blocking or sop.aio.evlStatus() == .closed) {
+                defer heap.free(data);
 
-fn log(data: Str, blocking: bool) !void {
-    const sop = Self.iso();
-    const heap = sop.heap.?;
+                if (sop.on_test) return;
+                // Raw printing e.g., `StdOut` in unit tests is currently illegal
+                // ↓ skips the following code when running on unit testing
 
-    if (blocking or sop.aio.evlStatus() == .closed) {
-        defer heap.free(data);
+                var std_out = std.io.getStdOut().writer();
+                try std_out.print("{s}", .{data});
+                return;
+            }
 
-        if (sop.on_test) return;
-        // Raw printing e.g., `StdOut` in unit tests is currently illegal
-        // ↓ skips the following code when running on unit testing
+            if (!sop.aio) {
+                _ = try std.posix.write(sop.fd.?, data);
+                // std.os.windows.WriteFile
+                std.debug.print("logging with blocking mode\n", .{});
+            }
+            else {
+                const log_data = try heap.create(Log);
+                log_data.* = Log {.data = data};
 
-        var std_out = std.io.getStdOut().writer();
-        try std_out.print("{s}", .{data});
-        return;
-    }
+                try sop.aio.write(free, @as(*anyopaque, log_data), .{
+                    .fd = sop.fd.?, .buff = data, .count = data.len, .offset = 0
+                });
+            }
+        }
 
-    if (!sop.aio) {
-        _ = try std.posix.write(sop.fd.?, data);
-        // std.os.windows.WriteFile
-        std.debug.print("logging with blocking mode\n", .{});
-    }
-    else {
-        const log_data = try heap.create(Log);
-        log_data.* = Log {.data = data};
+        fn free(cqe_res: i32, userdata: ?*anyopaque) void {
+            std.debug.assert(cqe_res > 0);
+            const heap = Self.iso().heap.?;
 
-        try sop.aio.write(free, @as(*anyopaque, log_data), .{
-            .fd = sop.fd.?, .buff = data, .count = data.len, .offset = 0
-        });
-    }
-}
+            const log_data: *Log = @ptrCast(@alignCast(userdata));
+            heap.free(log_data.data);
+            heap.destroy(log_data);
+        }
 
-fn free(cqe_res: i32, userdata: ?*anyopaque) void {
-    std.debug.assert(cqe_res > 0);
-    const heap = Self.iso().heap.?;
+        fn format(level: Str, msg: Str, data: ?[]Ctx, src: SrcLoc) !Str {
+            const heap = Self.iso().heap.?;
+            const datetime = DateTime.now().toLocal(.BST);
 
-    const log_data: *Log = @ptrCast(@alignCast(userdata));
-    heap.free(log_data.data);
-    heap.destroy(log_data);
-}
+            return blk: {
+                if (data) |ctx_data| {
+                    const out_str = try ctxFormat(ctx_data);
+                    defer heap.free(out_str);
 
-fn format(level: Str, msg: Str, data: ?[]Ctx, src: SrcLoc) !Str {
-    const heap = Self.iso().heap.?;
-    const datetime = DateTime.now().toLocal(.BST);
+                    const fmt_str = "{s} [{s}] {s} at {d}:{d}\n{s}\n~{s}\n";
+                    break :blk try fmt.allocPrint(heap, fmt_str, .{
+                        datetime, level, src.file, src.line, src.column, out_str, msg
+                    });
+                } else {
+                    const fmt_str = "{s} [{s}] {s} at {d}:{d}\n~{s}\n";
+                    break :blk try fmt.allocPrint(heap, fmt_str, .{
+                        datetime, level, src.file, src.line, src.column, msg
+                    });
+                }
+            };
+        }
 
-    return blk: {
-        if (data) |ctx_data| {
-            const out_str = try ctxFormat(ctx_data);
-            defer heap.free(out_str);
+        /// # Formats the Additional User Defined Data
+        /// **Remarks:** Return value must be freed by the caller.
+        fn ctxFormat(data: []Ctx) !Str {
+            const heap = Self.iso().heap.?;
+            var list = std.ArrayList(u8).init(heap);
 
-            const fmt_str = "{s} [{s}] {s} at {d}:{d}\n{s}\n~{s}\n";
-            break :blk try fmt.allocPrint(heap, fmt_str, .{
-                datetime, level, src.file, src.line, src.column, out_str, msg
-            });
-        } else {
-            const fmt_str = "{s} [{s}] {s} at {d}:{d}\n~{s}\n";
-            break :blk try fmt.allocPrint(heap, fmt_str, .{
-                datetime, level, src.file, src.line, src.column, msg
-            });
+            try list.append('{');
+
+            for (data) |ctx| {
+                const fmt_str = "{s}: {s},";
+                const out = try fmt.allocPrint(heap, fmt_str, .{ctx.name, ctx.value});
+                defer heap.free(out);
+
+                try list.appendSlice(out);
+            }
+
+            _ = list.pop();
+            try list.append('}');
+
+            return try list.toOwnedSlice();
         }
     };
-}
-
-/// # Formats the Additional User Defined Data
-/// **Remarks:** Return value must be freed by the caller.
-fn ctxFormat(data: []Ctx) !Str {
-    const heap = Self.iso().heap.?;
-    var list = std.ArrayList(u8).init(heap);
-
-    try list.append('{');
-
-    for (data) |ctx| {
-        const fmt_str = "{s}: {s},";
-        const out = try fmt.allocPrint(heap, fmt_str, .{ctx.name, ctx.value});
-        defer heap.free(out);
-
-        try list.appendSlice(out);
-    }
-
-    _ = list.pop();
-    try list.append('}');
-
-    return try list.toOwnedSlice();
 }
