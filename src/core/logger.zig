@@ -268,7 +268,10 @@ pub fn Logger(comptime Aio: type) type {
                 return;
             }
 
-            if (builtin.os.tag == .linux and Aio != void) {
+            if (builtin.os.tag == .linux
+                and Aio != void
+                and sop.output == .File)
+            {
                 const log_data = try heap.create(Log);
                 log_data.* = .{.data = data};
 
