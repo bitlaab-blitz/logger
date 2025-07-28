@@ -1,12 +1,8 @@
 //! # Utility Module
 
 const std = @import("std");
-const fs = std.fs;
-const fmt = std.fmt;
 const log = std.log;
-const mem = std.mem;
 const linux = std.os.linux;
-const Allocator = mem.Allocator;
 const SrcLoc = std.builtin.SourceLocation;
 
 const DateTime = @import("./datetime.zig");

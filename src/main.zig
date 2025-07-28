@@ -8,8 +8,7 @@ pub fn main() !void {
     // Write your code here...
 
     var gpa_mem = std.heap.DebugAllocator(.{}).init;
-    defer _ = gpa_mem.deinit();
-
+    defer std.debug.assert(gpa_mem.deinit() == .ok);
     const heap = gpa_mem.allocator();
 
     const levels = &.{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};

@@ -1,12 +1,16 @@
 # Developer Guide
 
-If you are using previous release of Jwt for some reason, you can generate documentation for that release by following these steps:
+If you are using previous release of Logger for some reason, you can generate documentation for that release by following these steps:
 
 - Install [Material for MkDocs](https://squidfunk.github.io/mkdocs-material/getting-started/) on your platform.
 
-- Download and extract `Source code (zip)` for your target release at [**Jwt Repo**](https://github.com/bitlaab-blitz/jwt)
+- Download and extract `Source code (zip)` for your target release at [**Logger Repo**](https://github.com/bitlaab-blitz/logger)
 
-- Now, `cd` into your release directory and run: `mkdocs serve`
+- Now, `cd` into your release directory and run:
+
+```sh
+mkdocs serve --dev-addr=0.0.0.0:3001
+```
 
 ## Generate Code Documentation
 

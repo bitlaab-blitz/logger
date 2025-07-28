@@ -1,9 +1,9 @@
 # How to use
 
-First, import Jwt on your Zig source file.
+First, import Logger on your Zig source file.
 
 ```zig
-const jwt = @import("jwt");
+const Log = @import("logger").Log(void);
 ```
 
 Now, add the following code into your main function.
@@ -14,43 +14,43 @@ defer std.debug.assert(gpa_mem.deinit() == .ok);
 const heap = gpa_mem.allocator();
 ```
 
-## Encode a JWT Token
+## Example: Blocking I/O
 
-Here, `Userdata` is a custom struct that holds application-specific authentication details.
+Following snippet saves different level of logs into the given file. For terminal logging use **null** instead of the log file.
 
 ```zig
-const Userdata = struct {
-    role: []const u8,
-    feature: []const []const u8
-};
+const levels = &.{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
 
-const key = "secret";
+try Log.init(heap, "test.log", levels, false);
+defer Log.deinit();
 
-const token = try jwt.Jws(Userdata).encode(heap, key, .{
-    .sub = "john",
-    .iss = "example.com",
-    .aud = "hydra",
-    .data = .{
-        .role = "admin",
-        .feature = &.{"foo", "bar"}
-    },
-    .iat = jwt.setTime(.Second, 0),
-    .nbf = jwt.setTime(.Second, 0),
-    .exp = jwt.setTime(.Minute, 2),
-});
-defer heap.free(token);
 
-std.debug.print("JWT Token: {s}\n", .{token});
+Log.debug("{s}", .{"hello from debug"}, null, @src());
+
+Log.info("{s}", .{"hello from info"}, &.{
+    .{.name = "john", .value = "doe"}
+}, @src());
+
+Log.warn("{s}", .{"hello from warn"}, &.{
+    .{.name = "john", .value = "doe"},
+    .{.name = "jane", .value = "doe"}
+}, @src());
+
+Log.err("{s}", .{"hello from err"}, null, @src());
+
+Log.fatal("{s}", .{"hello from fatal"}, null, @src());
 ```
 
-## Decode a JWT Token
+**Remarks:** If you omit a log level in Log.init(), its corresponding log functions won’t execute — enabling dynamic logging control in production.
 
-Token validation is handled internally, which automatically verifies the signature, checks required claims such as exp (expiration), nbf (not before), and ensures the token is structurally valid and not tampered with. 
+## Example: Async I/O
+
+To enable asynchronous I/O you must provide the **AsyncIo** executor from [Saturn](https://bitlaabsaturn.web.app/). Rest of the code will be the same.
 
 ```zig
-const token = "your jwt token...";
 
-const claims = try jwt.Jws(Userdata).decode(heap, key, token);
-std.debug.print("{any}\n", .{claims});
-try jwt.free(heap, claims);
+const saturn = @import("saturn");
+pub const AsyncIo = saturn.AsyncIo(1024, void);
+
+const Log = @import("logger").Log(AsyncIo);
 ```

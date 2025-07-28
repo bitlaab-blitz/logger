@@ -23,6 +23,6 @@ Here we write upgrading notes and make them as straightforward as possible.
 - A short description for fixed item n
 
 
-## [v1.0.0] - 2025-07-27
+## [v1.0.0] - 2025-07-28
 
 Initial bare minimum implementation of Logger.

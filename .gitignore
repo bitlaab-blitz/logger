@@ -4,3 +4,4 @@
 zig-out/
 site/
 
+*.log

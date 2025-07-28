@@ -25,11 +25,6 @@ pub fn build(b: *std.Build) void {
     // Self importing package
     exe.root_module.addImport("logger", pkg);
 
-    // // External package dependencies
-    // const jsonic = b.dependency("jsonic", .{});
-    // pkg.addImport("jsonic", jsonic.module("jsonic"));
-    // exe.root_module.addImport("jsonic", jsonic.module("jsonic"));
-
     b.installArtifact(exe);
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
