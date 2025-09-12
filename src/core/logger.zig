@@ -94,7 +94,7 @@ pub fn Logger(comptime Aio: type) type {
                     sop.handle = .{.file = rv};
                 }
             } else {
-                sop.handle = .{.file = std.io.getStdOut() };
+                sop.handle = .{.file = std.fs.File.stdout() };
             }
 
             for (levels) |level| {
@@ -263,8 +263,9 @@ pub fn Logger(comptime Aio: type) type {
                 // Writing to `StdOut` in unit tests is currently illegal
                 // ↓ skips the following code when called on unit testing
 
-                var std_out = std.io.getStdOut().writer();
-                try std_out.print("{s}", .{data});
+                var buff: [512]u8 = undefined;
+                var writer = fs.File.stdout().writer(&buff);
+                try std.Io.Writer.print(&writer.interface, "{s}", .{data});
                 return;
             }
 
@@ -281,8 +282,10 @@ pub fn Logger(comptime Aio: type) type {
                 });
             } else {
                 if (sop.output == .File) try sop.handle.?.file.seekFromEnd(0);
-                const file = sop.handle.?.file.writer();
-                std.debug.assert(try file.write(data) == data.len);
+
+                var buff: [512]u8 = undefined;
+                var writer = sop.handle.?.file.writer(&buff);
+                try std.Io.Writer.print(&writer.interface, "{s}", .{data});
 
                 heap.free(data);
             }
@@ -323,9 +326,9 @@ pub fn Logger(comptime Aio: type) type {
         /// **Remarks:** Return value must be freed by the caller.
         fn ctxFormat(data: []const Ctx) !Str {
             const heap = Self.iso().heap.?;
-            var list = std.ArrayList(u8).init(heap);
+            var list = ArrayList(u8){};
 
-            try list.append('{');
+            try list.append(heap, '{');
 
             for (data) |ctx| {
                 const fmt_str = "{s}: {s}, ";
@@ -333,14 +336,14 @@ pub fn Logger(comptime Aio: type) type {
                     heap, fmt_str, .{ctx.name, ctx.value}
                 );
                 defer heap.free(out);
-                try list.appendSlice(out);
+                try list.appendSlice(heap, out);
             }
 
             _ = list.pop();
             _ = list.pop();
-            try list.append('}');
+            try list.append(heap, '}');
 
-            return try list.toOwnedSlice();
+            return try list.toOwnedSlice(heap);
         }
     };
 }
