@@ -22,6 +22,11 @@ Here we write upgrading notes and make them as straightforward as possible.
 - A short description for fixed item 2
 - A short description for fixed item n
 
+
+## [v1.1.1] - 2025-09-15
+
+Minor BUG fixes for Zig v0.16.233-*.
+
 ## [v1.1.0] - 2025-09-13
 
 Minor code changes required for File I/O due to Zig v0.15.1 breaking changes.

@@ -263,9 +263,7 @@ pub fn Logger(comptime Aio: type) type {
                 // Writing to `StdOut` in unit tests is currently illegal
                 // ↓ skips the following code when called on unit testing
 
-                var buff: [512]u8 = undefined;
-                var writer = fs.File.stdout().writer(&buff);
-                try std.Io.Writer.print(&writer.interface, "{s}", .{data});
+                try fs.File.stdout().writeAll(data);
                 return;
             }
 
@@ -282,11 +280,7 @@ pub fn Logger(comptime Aio: type) type {
                 });
             } else {
                 if (sop.output == .File) try sop.handle.?.file.seekFromEnd(0);
-
-                var buff: [512]u8 = undefined;
-                var writer = sop.handle.?.file.writer(&buff);
-                try std.Io.Writer.print(&writer.interface, "{s}", .{data});
-
+                try sop.handle.?.file.writeAll(data);
                 heap.free(data);
             }
         }
