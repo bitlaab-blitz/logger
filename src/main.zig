@@ -2,18 +2,16 @@ const std = @import("std");
 
 const Log = @import("logger").Log(void);
 
-pub fn main() !void {
+pub fn main(init: std.process.Init) !void {
     std.debug.print("Hello, World!\n", .{});
 
     // Write your code here...
 
-    var gpa_mem = std.heap.DebugAllocator(.{}).init;
-    defer std.debug.assert(gpa_mem.deinit() == .ok);
-    const heap = gpa_mem.allocator();
+    const heap = init.gpa;
 
     const levels = &.{"DEBUG", "INFO", "WARN", "ERROR", "FATAL"};
 
-    try Log.init(heap, "test.log", levels, false);
+    try Log.init(init.io, heap, "test.log", levels, false);
     defer Log.deinit();
 
 

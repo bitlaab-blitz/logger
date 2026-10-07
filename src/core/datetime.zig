@@ -36,7 +36,10 @@ const Self = @This();
 
 /// # Current Date and Time
 pub fn now() Self {
-    const stamp: u64 = @intCast(time.milliTimestamp());
+    var threaded: std.Io.Threaded = .init_single_threaded;
+    const io = threaded.io();
+
+    const stamp: u64 = @intCast(std.Io.Clock.real.now(io).toMilliseconds());
     return fromTimestamp(stamp);
 }
 

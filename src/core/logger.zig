@@ -5,7 +5,6 @@ const std = @import("std");
 const fs = std.fs;
 const fmt = std.fmt;
 const mem = std.mem;
-const File = fs.File;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
 const SrcLoc = std.builtin.SourceLocation;
@@ -30,13 +29,14 @@ const Log = struct { data: Str };
 const Ctx = struct { name: Str, value: Str };
 
 const OutputType = enum { Console, File };
-const Handle = union(enum) { fd: i32, file: File };
+const Handle = union(enum) { fd: i32, file: std.Io.File };
 
 /// # Singleton Logging Manager
 /// - `Aio` - An optional I/O executor, use **void** for blocking I/O
 pub fn Logger(comptime Aio: type) type {
     return struct {
         const SingletonObject = struct {
+            io: std.Io = undefined,
             heap: ?Allocator = null,
             output: OutputType = OutputType.Console,
             handle: ?Handle = null,
@@ -53,6 +53,7 @@ pub fn Logger(comptime Aio: type) type {
         /// - `levels` - One or more log level text (e.g., `DEBUG`)
         /// - `on_test` - Determines if currently used in a unit test
         pub fn init(
+            io: std.Io,
             heap: Allocator,
             file: ?Str,
             levels: []const Str,
@@ -62,12 +63,13 @@ pub fn Logger(comptime Aio: type) type {
 
             if (sop.handle != null) @panic("Initialize Only Once Per Process!");
 
+            sop.io = io;
             sop.heap = heap;
             sop.on_test = on_test;
 
             if (file) |path| {
                 sop.output = OutputType.File;
-                const pathZ = try heap.dupeZ(u8, path);
+                const pathZ = try heap.dupeSentinel(u8, path, 0);
                 defer heap.free(pathZ);
 
                 const mode = 0o644; // For setting file permission (octal)
@@ -87,14 +89,14 @@ pub fn Logger(comptime Aio: type) type {
 
                     sop.handle = .{.fd = @truncate(res)};
                 } else {
-                    const rv = try std.fs.cwd().createFileZ(pathZ, .{
-                        .truncate = false, .read = false, .mode = mode
+                    const rv = try std.Io.Dir.cwd().createFile(io, pathZ, .{
+                        .truncate = false, .read = false
                     });
 
                     sop.handle = .{.file = rv};
                 }
             } else {
-                sop.handle = .{.file = std.fs.File.stdout() };
+                sop.handle = .{.file = std.Io.File.stdout() };
             }
 
             for (levels) |level| {
@@ -113,7 +115,7 @@ pub fn Logger(comptime Aio: type) type {
             if (sop.output == .Console) return;
 
             switch (sop.handle.?) {
-                .file => |file| file.close(),
+                .file => |file| file.close(sop.io),
                 .fd => |fd| {
                     if (builtin.os.tag == .linux and Aio != void) {
                         std.debug.assert(std.os.linux.close(fd) == 0);
@@ -263,7 +265,7 @@ pub fn Logger(comptime Aio: type) type {
                 // Writing to `StdOut` in unit tests is currently illegal
                 // ↓ skips the following code when called on unit testing
 
-                try fs.File.stdout().writeAll(data);
+                try std.Io.File.stdout().writeStreamingAll(sop.io, data);
                 return;
             }
 
@@ -279,9 +281,15 @@ pub fn Logger(comptime Aio: type) type {
                     .fd = fd, .buff = data, .count = data.len, .offset = 0
                 });
             } else {
-                if (sop.output == .File) try sop.handle.?.file.seekFromEnd(0);
-                try sop.handle.?.file.writeAll(data);
-                heap.free(data);
+                defer heap.free(data);
+
+                if (sop.output == .File) {
+                    const file = sop.handle.?.file;
+                    const end = try file.length(sop.io);
+                    try file.writePositionalAll(sop.io, data, end);
+                } else {
+                    try sop.handle.?.file.writeStreamingAll(sop.io, data);
+                }
             }
         }
 
@@ -320,7 +328,7 @@ pub fn Logger(comptime Aio: type) type {
         /// **Remarks:** Return value must be freed by the caller.
         fn ctxFormat(data: []const Ctx) !Str {
             const heap = Self.iso().heap.?;
-            var list = ArrayList(u8){};
+            var list: ArrayList(u8) = .empty;
 
             try list.append(heap, '{');
 

@@ -22,6 +22,13 @@ Here we write upgrading notes and make them as straightforward as possible.
 - A short description for fixed item 2
 - A short description for fixed item n
 
+## [v1.2.0] - 2026-10-07
+
+Internal code refactoring, better documentation, and Zig-0.17.0 version support.
+
+### Added
+
+- `Logger.init()` accepts Io
 
 ## [v1.1.1] - 2025-09-15
 
