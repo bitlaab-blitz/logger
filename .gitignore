@@ -5,3 +5,5 @@ zig-out/
 site/
 
 *.log
+
+zig-pkg/

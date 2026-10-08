@@ -1,11 +1,14 @@
 //! # Utility Module
 
 const std = @import("std");
+const Io = std.Io;
 const log = std.log;
 const linux = std.os.linux;
 const SrcLoc = std.builtin.SourceLocation;
 
 const DateTime = @import("./datetime.zig");
+
+const Str = []const u8;
 
 /// # Logs Syscall Error Number
 /// - e.g., Bad file descriptor (EBADF) - `utils.syscallError(9, @src());`
@@ -19,8 +22,8 @@ pub fn syscallError(code: i32, src: SrcLoc) void {
 /// **Remarks:** Exhausting memory means that all bets are off. Handling
 /// fallible memory allocations often leads to code complexity and sometimes
 /// not worth the effort. However, be cautious about the potential data lose!
-pub fn oom(src: SrcLoc) noreturn {
-    const datetime = DateTime.now().toLocal(.BST);
+pub fn oom(io: Io, src: SrcLoc) noreturn {
+    const datetime = DateTime.now(io).toLocal(.BST);
     const fmt_str = "{s} [FATAL] {s} at {d}:{d}\n";
     log.info(fmt_str, .{datetime, src.file, src.line, src.column});
     log.err("~ Out Of Memory", .{});
@@ -31,16 +34,16 @@ pub fn oom(src: SrcLoc) noreturn {
 ///
 /// **Remarks:** `@panic()` and `std.debug.panic()` has inconstancy.
 /// Process doesn't exit completely when calling from detached threads.
-pub fn panic(comptime format: []const u8, args: anytype, src: SrcLoc) noreturn {
-    const datetime = DateTime.now().toLocal(.BST);
+pub fn panic(io: Io, comptime format: Str, arg: anytype, src: SrcLoc) noreturn {
+    const datetime = DateTime.now(io).toLocal(.BST);
     const fmt_str = "{s} [FATAL] {s} at {d}:{d}\n";
     log.info(fmt_str, .{datetime, src.file, src.line, src.column});
-    log.err(format, args);
+    log.err(format, arg);
     std.process.exit(254);
 }
 
 /// # Unrecoverable Error Handle
 /// **Remarks:** Prevents unnecessary code repetition when needed multiple times
-pub fn unrecoverable(err: anyerror, src: SrcLoc) noreturn {
-    panic("~ {s}", .{@errorName(err)}, src);
+pub fn unrecoverable(io: Io, err: anyerror, src: SrcLoc) noreturn {
+    panic(io, "~ {s}", .{@errorName(err)}, src);
 }

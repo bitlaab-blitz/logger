@@ -35,10 +35,7 @@ timezone: TimeZone = .UTC,
 const Self = @This();
 
 /// # Current Date and Time
-pub fn now() Self {
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-
+pub fn now(io: std.Io) Self {
     const stamp: u64 = @intCast(std.Io.Clock.real.now(io).toMilliseconds());
     return fromTimestamp(stamp);
 }
@@ -106,26 +103,10 @@ fn addDate(self: *Self, ts: *u64) void {
         break;
     }
 
-    // Adjusts remaining days, months and years
-
-    const days = self.daysThisMonth();
-    if (self.day + ts.* > days) {
-        ts.* -= days - self.day;
-        self.month += 1;
-        self.day = 1;
-    }
-
+    // Adds the remaining days - the month loop exits with `ts` smaller than
+    // the days of the current month, so no further month/year rollover can
+    // occur here (`self.day` starts at 1)
     self.day += @intCast(ts.*);
-
-    if (self.day > self.daysThisMonth()) {
-        self.month += 1;
-        self.day = 1;
-    }
-
-    if (self.month > 12) {
-        self.year += 1;
-        self.month = 1;
-    }
 }
 
 /// # Specific Date and Time
@@ -206,7 +187,7 @@ pub fn from(fmt_str: []const u8) !Self {
 /// # ISO-8601 Formatted Date and Time (Zulu)
 pub fn toUtc(self: *const Self) [24]u8 {
     var buffer: [24]u8 = undefined;
-    const fmt_str = "{}-{:0>2}-{:0>2}T{:0>2}:{:0>2}:{:0>2}.{:0>3}Z";
+    const fmt_str = "{:0>4}-{:0>2}-{:0>2}T{:0>2}:{:0>2}:{:0>2}.{:0>3}Z";
     _ = fmt.bufPrint(&buffer, fmt_str, .{
         self.year,
         self.month,
@@ -231,7 +212,7 @@ pub fn toUtcOffset(self: *const Self) [29]u8 {
         .SGT => "+08:00",
     };
 
-    const fmt_str = "{}-{:0>2}-{:0>2}T{:0>2}:{:0>2}:{:0>2}.{:0>3}{s}";
+    const fmt_str = "{:0>4}-{:0>2}-{:0>2}T{:0>2}:{:0>2}:{:0>2}.{:0>3}{s}";
     _ = fmt.bufPrint(&buffer, fmt_str, .{
         self.year,
         self.month,
@@ -272,6 +253,10 @@ pub fn toLocal(self: *const Self, zone: ?TimeZone) [29]u8 {
         }
     }
 
+    // Clamps pre-epoch results (e.g., epoch rendered in `CST`) to the epoch,
+    // as dates before 1970 cannot be represented in this structure
+    if (timestamp < 0) timestamp = 0;
+
     var datetime = Self.fromTimestamp(@intCast(timestamp));
     const meridian = if (datetime.hour < 12) "AM" else "PM";
     switch (datetime.hour) {
@@ -280,7 +265,7 @@ pub fn toLocal(self: *const Self, zone: ?TimeZone) [29]u8 {
     }
 
     var buffer: [29]u8 = undefined;
-    const fmt_str = "{}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2} {s} in {s}";
+    const fmt_str = "{:0>4}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2} {s} in {s}";
     _ = fmt.bufPrint(&buffer, fmt_str, .{
         datetime.year,
         datetime.month,
@@ -409,4 +394,9 @@ test "demo" {
 
     try testing.expectError(Error.InvalidInput, Self.new(2018, 2, 29, 0, 0, 0));
     try testing.expectError(Error.TBEpoch, Self.new(1969, 1, 1, 0, 0, 0));
+
+    // Pre-epoch rendering in a negative offset zone clamps to the epoch
+    const dt_6 = try Self.new(1970, 1, 1, 0, 0, 0);
+    const out_6 = dt_6.toLocal(.CST);
+    try testing.expect(mem.eql(u8, &out_6, "1970-01-01 12:00:00 AM in CST"));
 }

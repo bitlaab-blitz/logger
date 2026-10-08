@@ -28,7 +28,7 @@ Internal code refactoring, better documentation, and Zig-0.17.0 version support.
 
 ### Added
 
-- `Logger.init()` accepts Io
+- `Logger.init()` now takes an additional `Io` as argument.
 
 ## [v1.1.1] - 2025-09-15
 
