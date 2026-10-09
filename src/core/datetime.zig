@@ -6,6 +6,7 @@ const fmt = std.fmt;
 const mem = std.mem;
 const time = std.time;
 const testing = std.testing;
+const Allocator = mem.Allocator;
 
 
 const Error = error { InvalidInput, InvalidFormat, UnknownUtcOffset, TBEpoch };
@@ -42,71 +43,66 @@ pub fn now(io: std.Io) Self {
 
 /// # Specific Date and Time
 pub fn fromTimestamp(epoch_ms: u64) Self {
-    var datetime = Self {};
-    var stamp: u64 = epoch_ms;
+    var rem = epoch_ms;
 
-    datetime.addMilliseconds(&stamp);
-    datetime.addSeconds(&stamp);
-    datetime.addMinutes(&stamp);
-    datetime.addHours(&stamp);
-    datetime.addDate(&stamp);
+    const ms = rem % 1000; rem /= 1000;
+    const sec = rem % 60;  rem /= 60;
+    const min = rem % 60;  rem /= 60;
+    const hrs = rem % 24;
 
-    return datetime;
+    const civil = civilFromDays(rem / 24);
+
+    return Self {
+        .year = civil.year,
+        .month = civil.month,
+        .day = civil.day,
+        .hour = @intCast(hrs),
+        .minute = @intCast(min),
+        .second = @intCast(sec),
+        .millisecond = @intCast(ms),
+    };
 }
 
-fn addMilliseconds(self: *Self, ts: *u64) void {
-    self.millisecond = @intCast(ts.* % 1000);
-    ts.* /= 1000;
+/// # Civil Date From Days Since Epoch
+/// - Howard Hinnant's `civil_from_days` algorithm - constant time, no loops
+fn civilFromDays(days: u64) struct { year: u16, month: u8, day: u8 } {
+    const z = @as(i64, @intCast(days)) + 719468;
+    const era = @divFloor(z, 146097);
+    const doe = z - era * 146097; // [0, 146096]
+    const yoe = @divFloor(
+        doe - @divFloor(doe, 1460) +
+            @divFloor(doe, 36524) - @divFloor(doe, 146096),
+        365
+    ); // [0, 399]
+    const y = yoe + era * 400;
+    const doy = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+    const mp = @divFloor(5 * doy + 2, 153); // [0, 11]
+    const d = doy - @divFloor(153 * mp + 2, 5) + 1; // [1, 31]
+    const m = mp + (if (mp < 10) @as(i64, 3) else -9); // [1, 12]
+
+    return .{
+        .year = @intCast(y + @as(i64, @intFromBool(m <= 2))),
+        .month = @intCast(m),
+        .day = @intCast(d),
+    };
 }
 
-fn addSeconds(self: *Self, ts: *u64) void {
-    self.second = @intCast(ts.* % 60);
-    ts.* /= 60;
-}
+/// # Days Since Epoch From A Civil Date
+/// - Howard Hinnant's `days_from_civil` algorithm - constant time, no loops
+fn daysFromCivil(y: u16, m: u8, d: u8) u64 {
+    const year: i64 = y;
+    const month: i64 = m;
 
-fn addMinutes(self: *Self, ts: *u64) void {
-    self.minute = @intCast(ts.* % 60);
-    ts.* /= 60;
-}
+    const y2 = year - @as(i64, @intFromBool(m <= 2));
+    const era = @divFloor(y2, 400);
+    const yoe = y2 - era * 400;
+    const doy = @divFloor(
+        153 * (month + (if (m > 2) @as(i64, -3) else 9)) + 2,
+        5
+    ) + @as(i64, d) - 1;
+    const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
 
-fn addHours(self: *Self, ts: *u64) void {
-    self.hour = @intCast(ts.* % 24);
-    ts.* /= 24;
-}
-
-/// # Calculates Date Since Epoch
-fn addDate(self: *Self, ts: *u64) void {
-    // Adds the years from 1970 up to the current year
-    while (true) {
-        const days: u16 = if (self.isLeapYear()) 366 else 365;
-        if (ts.* >= days) {
-            self.year += 1;
-            ts.* -= days;
-            continue;
-        }
-        break;
-    }
-
-    // Adds the remaining months up to the current month
-    while (true) {
-        const days = self.daysThisMonth();
-        if (ts.* >= days) {
-            self.month += 1;
-            ts.* -= days;
-
-            if (self.month > 12) {
-                self.year += 1;
-                self.month = 1;
-            }
-            continue;
-        }
-        break;
-    }
-
-    // Adds the remaining days - the month loop exits with `ts` smaller than
-    // the days of the current month, so no further month/year rollover can
-    // occur here (`self.day` starts at 1)
-    self.day += @intCast(ts.*);
+    return @intCast(era * 146097 + doe - 719468);
 }
 
 /// # Specific Date and Time
@@ -230,54 +226,95 @@ pub fn toUtcOffset(self: *const Self) [29]u8 {
 /// # Custom Formatted Date and Time
 /// - e.g., `1993-09-23 12:45:30 AM in UTC`
 pub fn toLocal(self: *const Self, zone: ?TimeZone) [29]u8 {
+    var buffer: [29]u8 = undefined;
+    const parts = self.localParts(zone);
+
+    _ = fmt.bufPrint(
+        &buffer,
+        "{:0>4}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2} {s} in {s}",
+        .{
+            parts.dt.year,
+            parts.dt.month,
+            parts.dt.day,
+            parts.dt.hour,
+            parts.dt.minute,
+            parts.dt.second,
+            parts.meridian,
+            parts.tz,
+        }
+    ) catch |err| @panic(@errorName(err));
+
+    return buffer;
+}
+
+/// # Custom Formatted Date and Time (streamed)
+/// - Appends the same bytes as `toLocal` directly into `list`, skipping the
+/// intermediate stack buffer and its copy
+pub fn formatLocal(
+    self: *const Self,
+    zone: ?TimeZone,
+    gpa: Allocator,
+    list: *std.ArrayList(u8)
+) Allocator.Error!void {
+    const parts = self.localParts(zone);
+    try list.print(
+        gpa,
+        "{:0>4}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2} {s} in {s}",
+        .{
+            parts.dt.year,
+            parts.dt.month,
+            parts.dt.day,
+            parts.dt.hour,
+            parts.dt.minute,
+            parts.dt.second,
+            parts.meridian,
+            parts.tz,
+        }
+    );
+}
+
+/// # Local Rendering Components
+/// - Offset-shifted date-time, time zone name and 12-hour meridian
+const Local = struct { dt: Self, tz: []const u8, meridian: []const u8 };
+
+/// **Remarks:** Shared by `toLocal` and `formatLocal` - shifts the timestamp
+/// by the zone's UTC offset and clamps pre-epoch results to the epoch, as
+/// dates before 1970 cannot be represented in this structure
+fn localParts(self: *const Self, zone: ?TimeZone) Local {
     var timestamp: i64 = @intCast(self.toTimestamp());
-    var timezone: []const u8 = undefined;
+    var tz: []const u8 = undefined;
 
     switch (zone orelse self.timezone) {
-        .UTC => timezone = @tagName(.UTC),
+        .UTC => tz = @tagName(.UTC),
         .BST => {
             timestamp += 6 * time.ms_per_hour;
-            timezone = @tagName(.BST);
+            tz = @tagName(.BST);
         },
         .CST => {
             timestamp += -6 * time.ms_per_hour;
-            timezone = @tagName(.CST);
+            tz = @tagName(.CST);
         },
         .IST => {
             timestamp += 5 * time.ms_per_hour + 30 * time.ms_per_min;
-            timezone = @tagName(.IST);
+            tz = @tagName(.IST);
         },
         .SGT => {
             timestamp += 8 * time.ms_per_hour;
-            timezone = @tagName(.SGT);
+            tz = @tagName(.SGT);
         }
     }
 
-    // Clamps pre-epoch results (e.g., epoch rendered in `CST`) to the epoch,
-    // as dates before 1970 cannot be represented in this structure
     if (timestamp < 0) timestamp = 0;
 
-    var datetime = Self.fromTimestamp(@intCast(timestamp));
-    const meridian = if (datetime.hour < 12) "AM" else "PM";
-    switch (datetime.hour) {
-        0 => datetime.hour = 12,
-        else => { if (datetime.hour > 12) datetime.hour -= 12; }
+    var dt = Self.fromTimestamp(@intCast(timestamp));
+
+    const meridian: []const u8 = if (dt.hour < 12) "AM" else "PM";
+    switch (dt.hour) {
+        0 => dt.hour = 12,
+        else => { if (dt.hour > 12) dt.hour -= 12; }
     }
 
-    var buffer: [29]u8 = undefined;
-    const fmt_str = "{:0>4}-{:0>2}-{:0>2} {:0>2}:{:0>2}:{:0>2} {s} in {s}";
-    _ = fmt.bufPrint(&buffer, fmt_str, .{
-        datetime.year,
-        datetime.month,
-        datetime.day,
-        datetime.hour,
-        datetime.minute,
-        datetime.second,
-        meridian,
-        timezone
-    }) catch |err| @panic(@errorName(err));
-
-    return buffer;
+    return .{ .dt = dt, .tz = tz, .meridian = meridian };
 }
 
 pub fn getTimezone(self: *const Self) TimeZone {
@@ -298,18 +335,7 @@ pub fn toTimestamp(self: *const Self) u64 {
 }
 
 fn daysSinceEpoch(self: *const Self) u64 {
-    var total_days: u64 = 0;
-
-    for (1970..self.year) |year| {
-        total_days += if (calcLeapYear(@intCast(year))) 366 else 365;
-    }
-
-    for (1..self.month) |month| {
-        total_days += calcDays(self.year, @intCast(month));
-    }
-
-    total_days += self.day;
-    return total_days - 1;
+    return daysFromCivil(self.year, self.month, self.day);
 }
 
 test daysSinceEpoch {

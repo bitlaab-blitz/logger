@@ -4,7 +4,6 @@
 const std = @import("std");
 const Io = std.Io;
 const fs = std.fs;
-const fmt = std.fmt;
 const mem = std.mem;
 const posix = std.posix;
 const Allocator = mem.Allocator;
@@ -48,8 +47,10 @@ pub fn Logger(comptime Aio: type) type {
             mutex: Io.Mutex = .init,
             /// Next append position in bytes - `io_uring` writes are
             /// `pwrite`, which ignores `O_APPEND`, so async, blocking and
-            /// fallback writes all reserve their range from this counter
-            file_offset: std.atomic.Value(u64) = .init(0)
+            /// fallback writes all reserve their range from this counter.
+            /// Cache-line aligned - hot-written per async write while the
+            /// neighboring fields (e.g., `level`) are read per log call
+            file_offset: std.atomic.Value(u64) align(64) = .init(0)
         };
 
         var so = SingletonObject {};
@@ -128,7 +129,15 @@ pub fn Logger(comptime Aio: type) type {
                         .truncate = false, .read = false
                     });
 
+                    // Seeds the shared append offset - lets blocking and
+                    // fallback writes skip a per-entry `length` syscall
+                    const len = rv.length(io) catch |e| {
+                        rv.close(io);
+                        return e;
+                    };
+
                     new_handle = .{.file = rv};
+                    seed = len;
                 }
 
                 new_output = OutputType.File;
@@ -184,23 +193,7 @@ pub fn Logger(comptime Aio: type) type {
             ctx: ?[]const Ctx,
             src: SrcLoc
         ) void {
-            const sop = Self.iso();
-
-            if (sop.level & DEBUG == DEBUG) {
-                const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch {
-                    utils.oom(sop.io, @src());
-                };
-                defer heap.free(data);
-
-                const out = format("DEBUG", data, ctx, src) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-
-                log(out, false) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-            }
+            writeLog("DEBUG", DEBUG, false, msg, args, ctx, src);
         }
 
         /// # Writes Information Log
@@ -211,23 +204,7 @@ pub fn Logger(comptime Aio: type) type {
             ctx: ?[]const Ctx,
             src: SrcLoc
         ) void {
-            const sop = Self.iso();
-
-            if (sop.level & INFO == INFO) {
-                const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch {
-                    utils.oom(sop.io, @src());
-                };
-                defer heap.free(data);
-
-                const out = format("INFO", data, ctx, src) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-
-                log(out, false) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-            }
+            writeLog("INFO", INFO, false, msg, args, ctx, src);
         }
 
         /// # Writes Warning Log
@@ -238,23 +215,7 @@ pub fn Logger(comptime Aio: type) type {
             ctx: ?[]const Ctx,
             src: SrcLoc
         ) void {
-            const sop = Self.iso();
-
-            if (sop.level & WARN == WARN) {
-                const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch {
-                    utils.oom(sop.io, @src());
-                };
-                defer heap.free(data);
-
-                const out = format("WARN", data, ctx, src) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-
-                log(out, false)  catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-            }
+            writeLog("WARN", WARN, false, msg, args, ctx, src);
         }
 
         /// # Writes Error Log
@@ -265,23 +226,7 @@ pub fn Logger(comptime Aio: type) type {
             ctx: ?[]const Ctx,
             src: SrcLoc
         ) void {
-            const sop = Self.iso();
-
-            if (sop.level & ERROR == ERROR) {
-                const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch {
-                    utils.oom(sop.io, @src());
-                };
-                defer heap.free(data);
-
-                const out = format("ERROR", data, ctx, src) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-
-                log(out, false)  catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-            }
+            writeLog("ERROR", ERROR, false, msg, args, ctx, src);
         }
 
         /// # Writes Fatal Log
@@ -293,23 +238,7 @@ pub fn Logger(comptime Aio: type) type {
             ctx: ?[]const Ctx,
             src: SrcLoc
         ) void {
-            const sop = Self.iso();
-
-            if (sop.level & FATAL == FATAL) {
-                const heap = sop.heap.?;
-                const data = fmt.allocPrint(heap, msg, args) catch {
-                    utils.oom(sop.io, @src());
-                };
-                defer heap.free(data);
-
-                const out = format("FATAL", data, ctx, src) catch |e| {
-                   utils.unrecoverable(sop.io, e, @src());
-                };
-
-                log(out, true) catch |e| {
-                    utils.unrecoverable(sop.io, e, @src());
-                };
-            }
+            writeLog("FATAL", FATAL, true, msg, args, ctx, src);
         }
 
         /// # Dispatches A Formatted Log Entry
@@ -383,9 +312,15 @@ pub fn Logger(comptime Aio: type) type {
                         try file.writePositionalAll(sop.io, data, offset);
                     },
                     .file => |file| {
-                        const end = try file.length(sop.io);
-                        try file.writePositionalAll(sop.io, data, end);
-                    },
+                        // Reserves from the shared counter - avoids a
+                        // per-entry `length` syscall and stays consistent
+                        // with async and fallback writes
+                        const offset = sop.file_offset.fetchAdd(
+                            data.len, .monotonic
+                        );
+
+                        try file.writePositionalAll(sop.io, data, offset);
+                    }
                 }
             } else {
                 try handle.file.writeStreamingAll(sop.io, data);
@@ -412,49 +347,70 @@ pub fn Logger(comptime Aio: type) type {
             heap.free(entry.data);
         }
 
-        fn format(level: Str, msg: Str, data: ?[]const Ctx, src: SrcLoc) !Str {
-            const heap = Self.iso().heap.?;
-            const datetime = DateTime.now(Self.iso().io).toLocal(.BST);
+        /// # Builds The Final Log Line In A Single Pass
+        /// **Remarks:** One growing buffer serves the whole entry - the
+        /// message is formatted straight into it, so there are no
+        /// intermediate allocations nor copies. Return value must be freed
+        /// by the caller.
+        fn build(
+            comptime label: Str,
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) !Str {
+            const sop = Self.iso();
+            const heap = sop.heap.?;
 
-            return blk: {
-                if (data) |ctx_data| {
-                    const out_str = try ctxFormat(ctx_data);
-                    defer heap.free(out_str);
-
-                    const fmt_str = "{s} [{s}] {s} at {d}:{d}\n{s}\n~{s}\n";
-                    break :blk try fmt.allocPrint(heap, fmt_str, .{
-                        datetime, level, src.file, src.line, src.column, out_str, msg
-                    });
-                } else {
-                    const fmt_str = "{s} [{s}] {s} at {d}:{d}\n~{s}\n";
-                    break :blk try fmt.allocPrint(heap, fmt_str, .{
-                        datetime, level, src.file, src.line, src.column, msg
-                    });
-                }
-            };
-        }
-
-        /// # Formats the Additional User Defined Data
-        /// **Remarks:** Return value must be freed by the caller.
-        fn ctxFormat(data: []const Ctx) !Str {
-            const heap = Self.iso().heap.?;
             var list: ArrayList(u8) = .empty;
             errdefer list.deinit(heap);
 
-            try list.append(heap, '{');
+            try DateTime.now(sop.io).formatLocal(.BST, heap, &list);
 
-            for (data, 0..) |ctx, i| {
-                if (i != 0) try list.appendSlice(heap, ", ");
+            try list.print(heap, " [{s}] {s} at {d}:{d}\n", .{
+                label, src.file, src.line, src.column
+            });
 
-                const out = try fmt.allocPrint(
-                    heap, "{s}: {s}", .{ctx.name, ctx.value}
-                );
-                defer heap.free(out);
-                try list.appendSlice(heap, out);
+            if (ctx) |entries| {
+                try list.append(heap, '{');
+
+                for (entries, 0..) |entry, i| {
+                    if (i != 0) try list.appendSlice(heap, ", ");
+                    try list.print(heap, "{s}: {s}", .{entry.name, entry.value});
+                }
+
+                try list.appendSlice(heap, "}\n");
             }
 
-            try list.append(heap, '}');
-            return try list.toOwnedSlice(heap);
+            try list.print(heap, "~" ++ msg, args);
+            try list.append(heap, '\n');
+
+            return list.toOwnedSlice(heap);
+        }
+
+        /// # Shared Body Of All Level Functions
+        /// **Remarks:** The level check runs first, so an inactive level
+        /// costs a single load-and-compare before anything is formatted
+        fn writeLog(
+            comptime label: Str,
+            comptime mask: u8,
+            comptime blocking: bool,
+            comptime msg: Str,
+            args: anytype,
+            ctx: ?[]const Ctx,
+            src: SrcLoc
+        ) void {
+            const sop = Self.iso();
+
+            if (sop.level & mask != mask) return;
+
+            const out = build(label, msg, args, ctx, src) catch {
+                utils.oom(sop.io, @src());
+            };
+
+            log(out, blocking) catch |e| {
+                utils.unrecoverable(sop.io, e, @src());
+            };
         }
     };
 }
