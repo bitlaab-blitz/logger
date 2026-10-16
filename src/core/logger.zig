@@ -114,15 +114,19 @@ pub fn Logger(comptime Aio: type) type {
                     const fd: i32 = @truncate(res);
 
                     // Seeds the append offset with the current file size
-                    const pos: isize = @bitCast(linux.lseek(fd, 0, linux.SEEK.END));
+                    const pos: isize = @bitCast(
+                        linux.lseek(fd, 0, linux.SEEK.END)
+                    );
+
                     if (pos < 0) {
                         const crv = linux.close(fd);
+                        const e = linux.errno(crv);
 
-                        if (linux.errno(crv)) |e| {
-                            // `EINTR` still closes the descriptor on Linux
-                            if (e != .INTR) {
-                                utils.syscallError(@truncate(crv), @src());
-                            }
+                        // `EINTR` still closes the descriptor on Linux
+                        if (e != .SUCCESS and e != .INTR) {
+                            utils.syscallError(
+                                -@as(i32, @intFromEnum(e)), @src()
+                            );
                         }
 
                         utils.syscallError(@truncate(pos), @src());
@@ -176,12 +180,13 @@ pub fn Logger(comptime Aio: type) type {
                 .fd => |fd| {
                     if (builtin.os.tag == .linux and Aio != void) {
                         const rv = linux.close(fd);
+                        const e = linux.errno(rv);
 
-                        if (linux.errno(rv)) |e| {
-                            // `EINTR` still closes the descriptor on Linux
-                            if (e != .INTR) {
-                                utils.syscallError(@truncate(rv), @src());
-                            }
+                        // `EINTR` still closes the descriptor on Linux
+                        if (e != .SUCCESS and e != .INTR) {
+                            utils.syscallError(
+                                -@as(i32, @intFromEnum(e)), @src()
+                            );
                         }
                     } else unreachable;
                 }
