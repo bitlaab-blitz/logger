@@ -104,7 +104,7 @@ pub fn Logger(comptime Aio: type) type {
                     const flags = std.os.linux.O {
                         .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true
                     };
-                    const rv = linux.openat(fs.cwd().fd, pathZ, flags, mode);
+                    const rv = linux.openat(linux.AT.FDCWD, pathZ, flags, mode);
                     const res: isize = @bitCast(rv);
 
                     if (res < 0) {
