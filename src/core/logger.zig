@@ -5,7 +5,7 @@ const std = @import("std");
 const Io = std.Io;
 const fs = std.fs;
 const mem = std.mem;
-const posix = std.posix;
+const linux = std.os.linux;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
 const SrcLoc = std.builtin.SourceLocation;
@@ -100,8 +100,7 @@ pub fn Logger(comptime Aio: type) type {
                 const mode = 0o644; // For setting file permission (octal)
 
                 if (builtin.os.tag == .linux and Aio != void) {
-                    const linux = std.os.linux;
-                    const flags = std.os.linux.O {
+                    const flags = linux.O {
                         .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true
                     };
                     const rv = linux.openat(linux.AT.FDCWD, pathZ, flags, mode);
@@ -117,7 +116,15 @@ pub fn Logger(comptime Aio: type) type {
                     // Seeds the append offset with the current file size
                     const pos: isize = @bitCast(linux.lseek(fd, 0, linux.SEEK.END));
                     if (pos < 0) {
-                        std.debug.assert(linux.close(fd) == 0);
+                        const crv = linux.close(fd);
+
+                        if (linux.errno(crv)) |e| {
+                            // `EINTR` still closes the descriptor on Linux
+                            if (e != .INTR) {
+                                utils.syscallError(@truncate(crv), @src());
+                            }
+                        }
+
                         utils.syscallError(@truncate(pos), @src());
                         return Error.FailedToOpenLogFile;
                     }
@@ -168,14 +175,13 @@ pub fn Logger(comptime Aio: type) type {
                 },
                 .fd => |fd| {
                     if (builtin.os.tag == .linux and Aio != void) {
-                        const rv = std.os.linux.close(fd);
-                        const res: isize = @bitCast(rv);
+                        const rv = linux.close(fd);
 
-                        // `EINTR` still closes the descriptor on Linux
-                        if (res < 0 and
-                            res != -@as(isize, @intFromEnum(posix.E.INTR))
-                        ) {
-                            utils.syscallError(@truncate(rv), @src());
+                        if (linux.errno(rv)) |e| {
+                            // `EINTR` still closes the descriptor on Linux
+                            if (e != .INTR) {
+                                utils.syscallError(@truncate(rv), @src());
+                            }
                         }
                     } else unreachable;
                 }
