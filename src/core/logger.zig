@@ -3,7 +3,6 @@
 
 const std = @import("std");
 const Io = std.Io;
-const fs = std.fs;
 const mem = std.mem;
 const linux = std.os.linux;
 const Allocator = mem.Allocator;
