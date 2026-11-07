@@ -22,6 +22,11 @@ Here we write upgrading notes and make them as straightforward as possible.
 - A short description for fixed item 2
 - A short description for fixed item n
 
+
+## [v1.2.1] - 2026-11-07
+
+Minor file descriptor fix.
+
 ## [v1.2.0] - 2026-10-16
 
 Internal code refactoring, better documentation, and Zig-0.17.0 version support.

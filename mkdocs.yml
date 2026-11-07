@@ -1,4 +1,4 @@
-site_name: logger v1.2.0
+site_name: logger v1.2.1
 site_url: http://0.0.0.0:8001
 nav:
   - Getting Started: index.md

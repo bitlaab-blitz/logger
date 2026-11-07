@@ -29,7 +29,7 @@ const Log = struct { data: Str };
 const Ctx = struct { name: Str, value: Str };
 
 const OutputType = enum { Console, File };
-const Handle = union(enum) { fd: i32, file: Io.File };
+const Handle = union(enum) { fd: Io.File.Handle, file: Io.File };
 
 /// # Singleton Logging Manager
 /// - `Aio` - An optional I/O executor, use **void** for blocking I/O
